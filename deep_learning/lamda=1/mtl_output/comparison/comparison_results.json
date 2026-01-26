@@ -1,0 +1,50 @@
+{
+  "trajectory_prediction": {
+    "MTL": {
+      "rmse": 0.11153554916381836,
+      "mae": 0.07192669063806534,
+      "ade": 0.49360835552215576,
+      "fde": 0.4934070408344269
+    },
+    "Traj-Only": {
+      "rmse": 0.11306252330541611,
+      "mae": 0.07618358731269836,
+      "ade": 0.5126842260360718,
+      "fde": 0.513205349445343
+    }
+  },
+  "intent_classification": {
+    "MTL": {
+      "accuracy": 0.9666666666666667,
+      "f1": 0.9664102017618641
+    },
+    "Intent-Only": {
+      "accuracy": 0.975,
+      "f1": 0.9747436050461833
+    }
+  },
+  "model_info": {
+    "MTL": {
+      "epoch": 94,
+      "type": "multi-task"
+    },
+    "Traj-Only": {
+      "epoch": 2,
+      "type": "trajectory"
+    },
+    "Intent-Only": {
+      "epoch": 17,
+      "type": "intent"
+    }
+  },
+  "config": {
+    "obs_len": 20,
+    "pred_len": 10,
+    "full_traj_len": 150,
+    "encoder_type": "lstm",
+    "encoder_hidden_dim": 128,
+    "num_epochs": 100,
+    "batch_size": 32,
+    "learning_rate": 0.001
+  }
+}
