@@ -24,7 +24,7 @@ plt.rcParams['axes.unicode_minus'] = False
 
 # ============== 路径配置 ==============
 # Lambda 值列表（按顺序）
-LAMBDA_VALUES = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0]
+LAMBDA_VALUES = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 # 各 lambda 文件夹的路径模板
 BASE_DIR = Path(__file__).parent
@@ -34,8 +34,12 @@ LAMBDA_DIRS = {
     0.2: BASE_DIR / 'lamda=0.2',
     0.3: BASE_DIR / 'lamda=0.3',
     0.4: BASE_DIR / 'lamda=0.4',
+    0.6: BASE_DIR / 'lamda=0.6',
     0.5: BASE_DIR / 'lamda=0.5',
-    1.0: BASE_DIR / 'lamda=1',
+    0.7: BASE_DIR / 'lamda=0.7',
+    0.8: BASE_DIR / 'lamda=0.8',
+    0.9: BASE_DIR / 'lamda=0.9',
+    1.0: BASE_DIR / 'lamda=1'
 }
 
 # 输出目录
