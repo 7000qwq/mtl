@@ -1,10 +1,10 @@
 {
   "trajectory_prediction": {
     "MTL": {
-      "rmse": 0.11997344344854355,
-      "mae": 0.08193078637123108,
-      "ade": 0.5471091270446777,
-      "fde": 0.548130989074707
+      "rmse": 0.1125059425830841,
+      "mae": 0.07226359099149704,
+      "ade": 0.4928441047668457,
+      "fde": 0.49260634183883667
     },
     "Traj-Only": {
       "rmse": 0.11306252330541611,
@@ -15,8 +15,8 @@
   },
   "intent_classification": {
     "MTL": {
-      "accuracy": 0.9666666666666667,
-      "f1": 0.9664418589271206
+      "accuracy": 0.975,
+      "f1": 0.9748870163091149
     },
     "Intent-Only": {
       "accuracy": 0.975,
@@ -25,7 +25,7 @@
   },
   "model_info": {
     "MTL": {
-      "epoch": 58,
+      "epoch": 94,
       "type": "multi-task"
     },
     "Traj-Only": {
@@ -46,5 +46,39 @@
     "num_epochs": 100,
     "batch_size": 32,
     "learning_rate": 0.001
+  },
+  "inference_efficiency": {
+    "MTL": {
+      "params": 237378,
+      "trainable_params": 237378,
+      "latency_ms": 3.1849664999970173,
+      "latency_std_ms": 0.4315973894979406,
+      "gpu_memory_mb": null,
+      "description": "Single forward pass for both trajectory prediction and intent classification"
+    },
+    "Traj-Only": {
+      "params": 226910,
+      "trainable_params": 226910,
+      "latency_ms": 0.7905535000043074,
+      "latency_std_ms": 0.12103970913021285,
+      "gpu_memory_mb": null,
+      "description": "Single-task model for trajectory prediction only"
+    },
+    "Intent-Only": {
+      "params": 210660,
+      "trainable_params": 210660,
+      "latency_ms": 2.3113705000105256,
+      "latency_std_ms": 0.2696569301526514,
+      "gpu_memory_mb": null,
+      "description": "Single-task model for intent classification only"
+    },
+    "STL-Combined": {
+      "params": 437570,
+      "trainable_params": 437570,
+      "latency_ms": 3.305272000001196,
+      "latency_std_ms": 0.4037937753618631,
+      "gpu_memory_mb": null,
+      "description": "Sequential inference of Traj-Only + Intent-Only (practical STL deployment)"
+    }
   }
 }

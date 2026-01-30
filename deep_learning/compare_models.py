@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import json
 import os
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import config
@@ -248,6 +249,411 @@ class ModelComparison:
         self.results['confusion_matrices'] = confusion_matrices
         return results
     
+    def _count_parameters(self, model: torch.nn.Module) -> int:
+        """统计模型参数量"""
+        return sum(p.numel() for p in model.parameters())
+    
+    def _count_trainable_parameters(self, model: torch.nn.Module) -> int:
+        """统计可训练参数量"""
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    @torch.no_grad()
+    def evaluate_inference_efficiency(self, num_runs: int = 200, warmup_runs: int = 50):
+        """
+        评估推理阶段资源消耗效率
+        
+        对比：
+        - MTL: 一次前向传播同时输出轨迹预测和意图识别
+        - Traj-Only: 单独的轨迹预测模型
+        - Intent-Only: 单独的意图识别模型
+        - STL-Combined: Traj-Only + Intent-Only 顺序推理的总资源消耗
+        
+        Args:
+            num_runs: 测试推理次数（不含预热）
+            warmup_runs: 预热次数
+        """
+        print("\n" + "="*80)
+        print("推理阶段效率评估 (Inference-Time Efficiency)")
+        print("="*80)
+        print(f"  设备: {self.device}")
+        print(f"  Batch Size: 1")
+        print(f"  预热次数: {warmup_runs}")
+        print(f"  测试次数: {num_runs}")
+        
+        # 准备真实测试样本
+        # 获取一个轨迹预测样本（包含obs_traj）
+        traj_sample = None
+        for s in self.test_traj_samples:
+            if 'obs_traj' in s:
+                from data_loader import TrajectoryDataset
+                temp_dataset = TrajectoryDataset([s], norm_params=self.norm_params, is_train=False)
+                traj_sample = temp_dataset[0]
+                break
+        
+        # 获取一个意图识别样本（包含full_traj）
+        intent_sample = None
+        for s in self.test_intent_samples:
+            if 'full_traj' in s:
+                from data_loader import TrajectoryDataset
+                temp_dataset = TrajectoryDataset([s], norm_params=self.norm_params, is_train=False)
+                intent_sample = temp_dataset[0]
+                break
+        
+        if traj_sample is None or intent_sample is None:
+            print("\n✗ 无法获取测试样本，跳过推理效率评估")
+            return {}
+        
+        # 准备输入张量
+        obs_traj = traj_sample['obs_traj'].unsqueeze(0).to(self.device)
+        full_traj = intent_sample['full_traj'].unsqueeze(0).to(self.device)
+        
+        print(f"\n  obs_traj shape: {obs_traj.shape}")
+        print(f"  full_traj shape: {full_traj.shape}")
+        
+        efficiency_results = {}
+        
+        # 检查CUDA可用性
+        use_cuda = self.device.type == 'cuda'
+        if use_cuda:
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+        
+        # ============== 1. MTL模型推理效率 ==============
+        if 'MTL' in self.models:
+            print("\n  [1/4] 测试 MTL 模型...")
+            model = self.models['MTL']['model']
+            model.eval()
+            
+            # 参数量统计
+            params = self._count_parameters(model)
+            trainable_params = self._count_trainable_parameters(model)
+            
+            # 预热
+            if use_cuda:
+                torch.cuda.reset_peak_memory_stats()
+            for _ in range(warmup_runs):
+                # MTL同时处理两个任务
+                _ = model(obs_traj=obs_traj, full_traj=full_traj)
+            
+            if use_cuda:
+                torch.cuda.synchronize()
+            
+            # 正式测试 - 同时执行两个任务
+            if use_cuda:
+                torch.cuda.reset_peak_memory_stats()
+            
+            latencies = []
+            for _ in range(num_runs):
+                if use_cuda:
+                    torch.cuda.synchronize()
+                start_time = time.perf_counter()
+                
+                # 一次前向传播同时输出轨迹预测和意图识别
+                pred_traj, intent_logits = model(obs_traj=obs_traj, full_traj=full_traj)
+                
+                if use_cuda:
+                    torch.cuda.synchronize()
+                end_time = time.perf_counter()
+                latencies.append((end_time - start_time) * 1000)  # 转换为毫秒
+            
+            avg_latency = np.mean(latencies)
+            std_latency = np.std(latencies)
+            
+            # GPU显存
+            gpu_memory_mb = None
+            if use_cuda:
+                gpu_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            
+            efficiency_results['MTL'] = {
+                'params': params,
+                'trainable_params': trainable_params,
+                'latency_ms': avg_latency,
+                'latency_std_ms': std_latency,
+                'gpu_memory_mb': gpu_memory_mb,
+                'description': 'Single forward pass for both trajectory prediction and intent classification'
+            }
+            print(f"        参数量: {params:,}")
+            print(f"        平均延迟: {avg_latency:.3f} ± {std_latency:.3f} ms")
+            if gpu_memory_mb:
+                print(f"        GPU显存: {gpu_memory_mb:.2f} MB")
+        
+        # ============== 2. Trajectory-Only模型推理效率 ==============
+        if 'Traj-Only' in self.models:
+            print("\n  [2/4] 测试 Trajectory-Only 模型...")
+            model = self.models['Traj-Only']['model']
+            model.eval()
+            
+            params = self._count_parameters(model)
+            trainable_params = self._count_trainable_parameters(model)
+            
+            # 预热
+            if use_cuda:
+                torch.cuda.reset_peak_memory_stats()
+            for _ in range(warmup_runs):
+                _ = model(obs_traj)
+            
+            if use_cuda:
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
+            
+            latencies = []
+            for _ in range(num_runs):
+                if use_cuda:
+                    torch.cuda.synchronize()
+                start_time = time.perf_counter()
+                
+                pred_traj = model(obs_traj)
+                
+                if use_cuda:
+                    torch.cuda.synchronize()
+                end_time = time.perf_counter()
+                latencies.append((end_time - start_time) * 1000)
+            
+            avg_latency = np.mean(latencies)
+            std_latency = np.std(latencies)
+            
+            gpu_memory_mb = None
+            if use_cuda:
+                gpu_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            
+            efficiency_results['Traj-Only'] = {
+                'params': params,
+                'trainable_params': trainable_params,
+                'latency_ms': avg_latency,
+                'latency_std_ms': std_latency,
+                'gpu_memory_mb': gpu_memory_mb,
+                'description': 'Single-task model for trajectory prediction only'
+            }
+            print(f"        参数量: {params:,}")
+            print(f"        平均延迟: {avg_latency:.3f} ± {std_latency:.3f} ms")
+            if gpu_memory_mb:
+                print(f"        GPU显存: {gpu_memory_mb:.2f} MB")
+        
+        # ============== 3. Intent-Only模型推理效率 ==============
+        if 'Intent-Only' in self.models:
+            print("\n  [3/4] 测试 Intent-Only 模型...")
+            model = self.models['Intent-Only']['model']
+            model.eval()
+            
+            params = self._count_parameters(model)
+            trainable_params = self._count_trainable_parameters(model)
+            
+            # 预热
+            if use_cuda:
+                torch.cuda.reset_peak_memory_stats()
+            for _ in range(warmup_runs):
+                _ = model(full_traj)
+            
+            if use_cuda:
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
+            
+            latencies = []
+            for _ in range(num_runs):
+                if use_cuda:
+                    torch.cuda.synchronize()
+                start_time = time.perf_counter()
+                
+                intent_logits = model(full_traj)
+                
+                if use_cuda:
+                    torch.cuda.synchronize()
+                end_time = time.perf_counter()
+                latencies.append((end_time - start_time) * 1000)
+            
+            avg_latency = np.mean(latencies)
+            std_latency = np.std(latencies)
+            
+            gpu_memory_mb = None
+            if use_cuda:
+                gpu_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            
+            efficiency_results['Intent-Only'] = {
+                'params': params,
+                'trainable_params': trainable_params,
+                'latency_ms': avg_latency,
+                'latency_std_ms': std_latency,
+                'gpu_memory_mb': gpu_memory_mb,
+                'description': 'Single-task model for intent classification only'
+            }
+            print(f"        参数量: {params:,}")
+            print(f"        平均延迟: {avg_latency:.3f} ± {std_latency:.3f} ms")
+            if gpu_memory_mb:
+                print(f"        GPU显存: {gpu_memory_mb:.2f} MB")
+        
+        # ============== 4. STL-Combined (顺序推理两个模型) ==============
+        if 'Traj-Only' in self.models and 'Intent-Only' in self.models:
+            print("\n  [4/4] 测试 STL-Combined (Traj-Only + Intent-Only 顺序推理)...")
+            traj_model = self.models['Traj-Only']['model']
+            intent_model = self.models['Intent-Only']['model']
+            traj_model.eval()
+            intent_model.eval()
+            
+            # 参数量为两个模型之和
+            combined_params = (self._count_parameters(traj_model) + 
+                              self._count_parameters(intent_model))
+            combined_trainable = (self._count_trainable_parameters(traj_model) + 
+                                 self._count_trainable_parameters(intent_model))
+            
+            # 预热（两个模型都要预热）
+            if use_cuda:
+                torch.cuda.reset_peak_memory_stats()
+            for _ in range(warmup_runs):
+                _ = traj_model(obs_traj)
+                _ = intent_model(full_traj)
+            
+            if use_cuda:
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
+            
+            # 正式测试 - 顺序调用两个模型
+            latencies = []
+            for _ in range(num_runs):
+                if use_cuda:
+                    torch.cuda.synchronize()
+                start_time = time.perf_counter()
+                
+                # 先运行轨迹预测
+                pred_traj = traj_model(obs_traj)
+                # 再运行意图识别
+                intent_logits = intent_model(full_traj)
+                
+                if use_cuda:
+                    torch.cuda.synchronize()
+                end_time = time.perf_counter()
+                latencies.append((end_time - start_time) * 1000)
+            
+            avg_latency = np.mean(latencies)
+            std_latency = np.std(latencies)
+            
+            gpu_memory_mb = None
+            if use_cuda:
+                gpu_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            
+            efficiency_results['STL-Combined'] = {
+                'params': combined_params,
+                'trainable_params': combined_trainable,
+                'latency_ms': avg_latency,
+                'latency_std_ms': std_latency,
+                'gpu_memory_mb': gpu_memory_mb,
+                'description': 'Sequential inference of Traj-Only + Intent-Only (practical STL deployment)'
+            }
+            print(f"        参数量: {combined_params:,}")
+            print(f"        平均延迟: {avg_latency:.3f} ± {std_latency:.3f} ms")
+            if gpu_memory_mb:
+                print(f"        GPU显存: {gpu_memory_mb:.2f} MB")
+        
+        # 保存结果
+        self.results['inference_efficiency'] = efficiency_results
+        
+        # 打印对比表格
+        self._print_efficiency_table(efficiency_results)
+        
+        return efficiency_results
+    
+    def _print_efficiency_table(self, efficiency_results: Dict):
+        """打印推理效率对比表格"""
+        print("\n" + "-"*80)
+        print("【推理效率对比表 Inference Efficiency Comparison】")
+        print("-"*80)
+        
+        # 构建表格数据
+        table_data = []
+        headers = ['Model', 'Parameters', 'Latency (ms)', 'GPU Memory (MB)']
+        
+        # 按特定顺序展示
+        model_order = ['MTL', 'Traj-Only', 'Intent-Only', 'STL-Combined']
+        
+        for model_name in model_order:
+            if model_name in efficiency_results:
+                res = efficiency_results[model_name]
+                params_str = f"{res['params']:,}"
+                latency_str = f"{res['latency_ms']:.3f} ± {res['latency_std_ms']:.3f}"
+                memory_str = f"{res['gpu_memory_mb']:.2f}" if res['gpu_memory_mb'] else "N/A (CPU)"
+                table_data.append([model_name, params_str, latency_str, memory_str])
+        
+        print(tabulate(table_data, headers=headers, tablefmt='grid'))
+        
+        # 打印MTL vs STL-Combined的对比分析
+        if 'MTL' in efficiency_results and 'STL-Combined' in efficiency_results:
+            mtl = efficiency_results['MTL']
+            stl = efficiency_results['STL-Combined']
+            
+            print("\n【MTL vs STL-Combined 效率对比】")
+            print("-"*50)
+            
+            # 参数量对比
+            param_ratio = stl['params'] / mtl['params']
+            param_savings = (1 - mtl['params'] / stl['params']) * 100
+            print(f"  参数量:")
+            print(f"    - MTL:          {mtl['params']:,}")
+            print(f"    - STL-Combined: {stl['params']:,}")
+            print(f"    - MTL节省参数: {param_savings:.1f}%")
+            
+            # 延迟对比
+            latency_speedup = stl['latency_ms'] / mtl['latency_ms']
+            latency_savings = (1 - mtl['latency_ms'] / stl['latency_ms']) * 100
+            print(f"\n  推理延迟:")
+            print(f"    - MTL:          {mtl['latency_ms']:.3f} ms")
+            print(f"    - STL-Combined: {stl['latency_ms']:.3f} ms")
+            print(f"    - MTL加速比:   {latency_speedup:.2f}x")
+            print(f"    - MTL节省时间: {latency_savings:.1f}%")
+            
+            # 显存对比（如果可用）
+            if mtl['gpu_memory_mb'] and stl['gpu_memory_mb']:
+                memory_savings = (1 - mtl['gpu_memory_mb'] / stl['gpu_memory_mb']) * 100
+                print(f"\n  GPU显存:")
+                print(f"    - MTL:          {mtl['gpu_memory_mb']:.2f} MB")
+                print(f"    - STL-Combined: {stl['gpu_memory_mb']:.2f} MB")
+                print(f"    - MTL节省显存: {memory_savings:.1f}%")
+            
+            print("\n  结论: MTL模型在实际部署中相比两个独立STL模型：")
+            print(f"    ✓ 参数量减少 {param_savings:.1f}%")
+            print(f"    ✓ 推理速度提升 {latency_speedup:.2f}x")
+            if mtl['gpu_memory_mb'] and stl['gpu_memory_mb']:
+                print(f"    ✓ 显存占用减少 {memory_savings:.1f}%")
+    
+    def generate_efficiency_latex_table(self):
+        """生成推理效率的LaTeX表格"""
+        efficiency = self.results.get('inference_efficiency', {})
+        if not efficiency:
+            return
+        
+        print("\n% Inference Efficiency Results")
+        print("\\begin{table}[h]")
+        print("\\centering")
+        print("\\caption{Inference-Time Efficiency Comparison}")
+        print("\\begin{tabular}{lccc}")
+        print("\\toprule")
+        print("Model & Parameters & Latency (ms) & GPU Memory (MB) \\\\")
+        print("\\midrule")
+        
+        model_order = ['MTL', 'Traj-Only', 'Intent-Only', 'STL-Combined']
+        display_names = {
+            'MTL': 'MTL (Ours)',
+            'Traj-Only': 'Trajectory-Only',
+            'Intent-Only': 'Intent-Only',
+            'STL-Combined': 'STL-Combined$^\\dagger$'
+        }
+        
+        for model_name in model_order:
+            if model_name in efficiency:
+                res = efficiency[model_name]
+                name = display_names.get(model_name, model_name)
+                params = f"{res['params']:,}"
+                latency = f"{res['latency_ms']:.3f}"
+                memory = f"{res['gpu_memory_mb']:.2f}" if res['gpu_memory_mb'] else "-"
+                print(f"{name} & {params} & {latency} & {memory} \\\\")
+        
+        print("\\bottomrule")
+        print("\\end{tabular}")
+        print("\\begin{tablenotes}")
+        print("\\small")
+        print("\\item[$\\dagger$] STL-Combined represents the sequential inference of Trajectory-Only and Intent-Only models, simulating practical single-task learning deployment.")
+        print("\\end{tablenotes}")
+        print("\\label{tab:efficiency}")
+        print("\\end{table}")
+
     def print_comparison_table(self):
         """打印对比表格"""
         print("\n" + "="*80)
@@ -522,7 +928,8 @@ class ModelComparison:
                 'num_epochs': config.NUM_EPOCHS,
                 'batch_size': config.BATCH_SIZE,
                 'learning_rate': config.LEARNING_RATE
-            }
+            },
+            'inference_efficiency': self.results.get('inference_efficiency', {})
         }
         
         # 转换numpy数组为list
@@ -591,6 +998,9 @@ class ModelComparison:
         print("\\end{tabular}")
         print("\\label{tab:intent}")
         print("\\end{table}")
+        
+        # 推理效率表格
+        self.generate_efficiency_latex_table()
 
 
 def main():
@@ -619,6 +1029,9 @@ def main():
     # 评估
     comparison.evaluate_trajectory_prediction()
     comparison.evaluate_intent_classification()
+    
+    # 评估推理效率
+    comparison.evaluate_inference_efficiency(num_runs=200, warmup_runs=50)
     
     # 打印对比表格
     comparison.print_comparison_table()
