@@ -1,0 +1,21 @@
+# ============================================================
+# 安装步骤（在 GPU 服务器上）：
+#
+# 1. 先单独安装 PyTorch（按实际 CUDA 版本选择命令）：
+#
+#    CUDA 12.1：
+#      pip install torch --index-url https://download.pytorch.org/whl/cu121
+#    CUDA 11.8：
+#      pip install torch --index-url https://download.pytorch.org/whl/cu118
+#    CPU-only：
+#      pip install torch
+#
+# 2. 再安装其余依赖：
+#      pip install -r requirements.txt
+# ============================================================
+
+numpy>=1.19
+scikit-learn>=0.24
+matplotlib>=3.3
+seaborn>=0.11
+tabulate>=0.8

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 模型输出（checkpoint 体积大，不入库）
+deep_learning/mtl_output/
+
+# 虚拟环境
+mtl_env/
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 系统
+.DS_Store
+*.swp

@@ -69,7 +69,7 @@ WEIGHT_DECAY = 1e-5
 
 # 多任务学习权重
 LOSS_WEIGHT_TRAJ = 1.0   # 轨迹预测损失权重
-LOSS_WEIGHT_INTENT = 0.9  # 意图分类损失权重（lambda_intent）
+LOSS_WEIGHT_INTENT = float(os.environ.get('MTL_LAMBDA', 0.9))  # 意图分类损失权重（lambda_intent），可通过环境变量 MTL_LAMBDA 覆盖
 
 # 轨迹损失类型
 TRAJ_LOSS_TYPE = 'mse'    # 可选: mse, l1, smoothl1
